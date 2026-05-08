@@ -1,0 +1,148 @@
+<script>
+  const API_URL = 'https://ysxbsbrjwe.execute-api.ap-southeast-1.amazonaws.com/sensor';
+  let lastTimestamp = null;
+  let intervalId = null;
+  let isPaused = false;
+
+  function formatDate(ts) {
+    const d = new Date(parseInt(ts));
+    return d.toLocaleDateString([], { month: 'short', day: 'numeric' })
+      + ' ' + d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+  }
+
+  function formatTimeShort(ts) {
+    return new Date(parseInt(ts)).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+  }
+
+  const tempChart = new Chart(document.getElementById('tempChart'), {
+    type: 'line',
+    data: {
+      labels: [],
+      datasets: [{
+        data: [],
+        borderColor: '#f6ad55',
+        backgroundColor: 'rgba(246,173,85,0.08)',
+        borderWidth: 2,
+        pointRadius: 0,
+        fill: true,
+        tension: 0.4
+      }]
+    },
+    options: {
+      responsive: true,
+      animation: { duration: 300 },
+      plugins: { legend: { display: false } },
+      scales: {
+        x: {
+          ticks: { color: '#475569', maxTicksLimit: 8, maxRotation: 0 },
+          grid: { color: '#1f2937' }
+        },
+        y: {
+          suggestedMin: 20,
+          suggestedMax: 40,
+          ticks: { color: '#475569' },
+          grid: { color: '#1f2937' }
+        }
+      }
+    }
+  });
+
+  const humidChart = new Chart(document.getElementById('humidChart'), {
+    type: 'line',
+    data: {
+      labels: [],
+      datasets: [{
+        data: [],
+        borderColor: '#63b3ed',
+        backgroundColor: 'rgba(99,179,237,0.08)',
+        borderWidth: 2,
+        pointRadius: 0,
+        fill: true,
+        tension: 0.4
+      }]
+    },
+    options: {
+      responsive: true,
+      animation: { duration: 300 },
+      plugins: { legend: { display: false } },
+      scales: {
+        x: {
+          ticks: { color: '#475569', maxTicksLimit: 8, maxRotation: 0 },
+          grid: { color: '#1f2937' }
+        },
+        y: {
+          suggestedMin: 40,
+          suggestedMax: 100,
+          ticks: { color: '#475569' },
+          grid: { color: '#1f2937' }
+        }
+      }
+    }
+  });
+
+  async function fetchData() {
+    try {
+      const res = await fetch(API_URL);
+      const data = await res.json();
+
+      document.getElementById('temp').textContent = data.temperature.toFixed(1);
+      document.getElementById('humidity').textContent = data.humidity.toFixed(1);
+      document.getElementById('last-updated').textContent = new Date().toLocaleTimeString();
+
+      const isNew = lastTimestamp !== data.timestamp;
+      lastTimestamp = data.timestamp;
+
+      const chronological = [...data.history].reverse();
+      const labels = chronological.map(r => formatTimeShort(r.timestamp));
+      const temps  = chronological.map(r => r.temperature);
+      const humids = chronological.map(r => r.humidity);
+
+      tempChart.data.labels = labels;
+      tempChart.data.datasets[0].data = temps;
+      tempChart.update();
+
+      humidChart.data.labels = labels;
+      humidChart.data.datasets[0].data = humids;
+      humidChart.update();
+
+      const tbody = document.getElementById('history-body');
+      tbody.innerHTML = data.history.map((row, i) => `
+        <tr class="${i === 0 && isNew ? 'new-row' : ''}">
+          <td style="color:#475569">${i + 1}</td>
+          <td>${formatDate(row.timestamp)}</td>
+          <td class="temp-val">${row.temperature.toFixed(1)} °C</td>
+          <td class="humid-val">${row.humidity.toFixed(1)} %</td>
+        </tr>
+      `).join('');
+
+    } catch (e) {
+      console.error('Fetch error:', e);
+      document.getElementById('last-updated').textContent = 'Connection error';
+    }
+  }
+
+  function toggleStream() {
+    const btn   = document.getElementById('toggle-btn');
+    const dot   = document.getElementById('dot');
+    const label = document.getElementById('live-label');
+    if (isPaused) {
+      intervalId = setInterval(fetchData, 5000);
+      fetchData();
+      btn.textContent = '⏸ Pause';
+      dot.style.animationPlayState = 'running';
+      dot.style.background = '#48bb78';
+      label.textContent = 'LIVE';
+      isPaused = false;
+    } else {
+      clearInterval(intervalId);
+      btn.textContent = '▶ Resume';
+      dot.style.animationPlayState = 'paused';
+      dot.style.background = '#64748b';
+      label.textContent = 'PAUSED';
+      isPaused = true;
+    }
+  }
+
+  fetchData();
+  intervalId = setInterval(fetchData, 5000);
+</script>
