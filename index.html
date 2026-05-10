@@ -5,7 +5,6 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Smart Plant Monitor</title>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>
-  <script src="https://cdn.jsdelivr.net/npm/aws-iot-device-sdk-v2@1.19.1/dist/browser/aws-iot-sdk.min.js"></script>
   <style>
     * { margin: 0; padding: 0; box-sizing: border-box; }
     body {
@@ -85,7 +84,7 @@
       background: #f6ad55;
       border-radius: 999px;
       width: 100%;
-      transition: width 0.3s linear;
+      transition: width 1s linear;
     }
     .status-bar {
       display: flex;
@@ -227,31 +226,22 @@
 </div>
 
 <script>
-  // ── Configuration (already filled) ─────────────────────────────────────────
   const API_BASE = 'https://ysxbsbrjwe.execute-api.ap-southeast-1.amazonaws.com';
-  const COGNITO_IDENTITY_POOL_ID = 'ap-southeast-1:7afde391-6416-4689-a364-f480b94b57a8';
-  const AWS_IOT_TOPIC = 'plant/pump/state';
 
-  // ── Time constants (must match Lambda) ──────────────────────────────────────
-  const PUMP_RUN_SECONDS = 5;
-  const COOLDOWN_SECONDS = 20;
-  const TOTAL_CYCLE      = PUMP_RUN_SECONDS + COOLDOWN_SECONDS;  // 25 seconds
-
-  // ── Sensor data state ───────────────────────────────────────────────────────
   let lastTimestamp  = null;
   let tempChart      = null;
   let humidChart     = null;
 
-  // ── Pump state — synchronized from server fired_at ──────────────────────────
-  let _firedAt       = 0;    // Unix seconds — the ONE source of truth
-  let _syncTimer     = null; // 200ms loop for smooth UI updates
+  // ── Pump state (all driven by server, never reset on refresh) ────────────────
+  let _cooldownRemaining = 0;
+  let _cooldownTotal     = 20;
+  let _tickInterval      = null;
+  let _syncInterval      = null;
+  let _pumpRunning       = false;
 
-  // ── AWS IoT MQTT client ────────────────────────────────────────────────────
-  let mqttClient = null;
-
-  // ── Helpers ─────────────────────────────────────────────────────────────────
+  // ── Helpers ───────────────────────────────────────────────────────────────────
   function formatDate(ts) {
-    const d = new Date(parseInt(ts));
+    var d = new Date(parseInt(ts));
     return d.toLocaleDateString([], { month: 'short', day: 'numeric' })
       + ' ' + d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
   }
@@ -260,192 +250,149 @@
     return new Date(parseInt(ts)).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
   }
 
-  // ── Core sync: compute state from fired_at and current time ─────────────────
-  function computeState() {
-    if (!_firedAt) {
-      return { pumping: false, cooldown_remaining: 0 };
-    }
-    let elapsed = (Date.now() / 1000) - _firedAt;
-    if (elapsed < 0) elapsed = 0;
+  // ── Pump UI ───────────────────────────────────────────────────────────────────
+  function applyPumpUI() {
+    var btn       = document.getElementById('pump-btn');
+    var indicator = document.getElementById('pump-indicator');
+    var statusTxt = document.getElementById('pump-status-text');
+    var barWrap   = document.getElementById('cooldown-bar-wrap');
+    var bar       = document.getElementById('cooldown-bar');
 
-    if (elapsed < PUMP_RUN_SECONDS) {
-      // pump still running
-      return { pumping: true, cooldown_remaining: COOLDOWN_SECONDS };
+    if (_pumpRunning) {
+      indicator.className      = 'pump-indicator running';
+      statusTxt.textContent    = 'Pump running';
+      btn.textContent          = '⏳ Watering...';
+      btn.disabled             = true;
+      barWrap.style.display    = 'none';
+      return;
+    }
+
+    if (_cooldownRemaining > 0) {
+      indicator.className      = 'pump-indicator cooldown';
+      statusTxt.textContent    = 'Cooling down';
+      btn.textContent          = '⏳ Cooldown — ' + _cooldownRemaining + 's';
+      btn.disabled             = true;
+      barWrap.style.display    = 'block';
+      // Bar drains left as cooldown ticks down (shows remaining, not elapsed)
+      bar.style.width          = ((_cooldownRemaining / _cooldownTotal) * 100) + '%';
     } else {
-      const cooldownElapsed = elapsed - PUMP_RUN_SECONDS;
-      const remaining = Math.max(0, COOLDOWN_SECONDS - cooldownElapsed);
-      return { pumping: false, cooldown_remaining: remaining };
+      indicator.className      = 'pump-indicator idle';
+      statusTxt.textContent    = 'Idle';
+      btn.textContent          = '💧 Water Now';
+      btn.disabled             = false;
+      barWrap.style.display    = 'none';
     }
   }
 
-  // ── Render pump UI from computed state ──────────────────────────────────────
-  function renderPumpUI() {
-    const state     = computeState();
-    const btn       = document.getElementById('pump-btn');
-    const indicator = document.getElementById('pump-indicator');
-    const statusTxt = document.getElementById('pump-status-text');
-    const barWrap   = document.getElementById('cooldown-bar-wrap');
-    const bar       = document.getElementById('cooldown-bar');
-
-    if (state.pumping) {
-      indicator.className   = 'pump-indicator running';
-      statusTxt.textContent = 'Pump running';
-      btn.textContent       = '⏳ Watering...';
-      btn.disabled          = true;
-      barWrap.style.display = 'none';
-    } else if (state.cooldown_remaining > 0.5) {
-      const sec = Math.ceil(state.cooldown_remaining);
-      indicator.className   = 'pump-indicator cooldown';
-      statusTxt.textContent = 'Cooling down';
-      btn.textContent       = '⏳ Cooldown — ' + sec + 's';
-      btn.disabled          = true;
-      barWrap.style.display = 'block';
-      bar.style.width       = ((state.cooldown_remaining / COOLDOWN_SECONDS) * 100) + '%';
-    } else {
-      indicator.className   = 'pump-indicator idle';
-      statusTxt.textContent = 'Idle';
-      btn.textContent       = '💧 Water Now';
-      btn.disabled          = false;
-      barWrap.style.display = 'none';
-    }
-  }
-
-  // ── Sync loop — runs at 5 fps for smooth countdown ──────────────────────────
-  function startSyncLoop() {
-    if (_syncTimer) return;
-    _syncTimer = setInterval(renderPumpUI, 200);
-  }
-
-  // ── Apply server state (called by MQTT and HTTP) ────────────────────────────
-  function applyServerState(pumping, cooldownRemaining, firedAt) {
-    if (firedAt && firedAt > _firedAt) {
-      _firedAt = firedAt;
-    } else if (!firedAt && (pumping || cooldownRemaining > 0) && !_firedAt) {
-      // fallback: estimate fired_at if server didn't send one (shouldn't happen)
-      if (pumping) {
-        _firedAt = Date.now() / 1000;
-      } else {
-        _firedAt = (Date.now() / 1000) - PUMP_RUN_SECONDS - (COOLDOWN_SECONDS - cooldownRemaining);
+  // Local 1-second tick — keeps the countdown smooth between server syncs
+  function startTick() {
+    if (_tickInterval) return;
+    _tickInterval = setInterval(function() {
+      if (_cooldownRemaining > 0) {
+        _cooldownRemaining--;
+        applyPumpUI();
       }
-    }
-
-    // If server says idle and cycle is complete, clear fired_at
-    if (!pumping && cooldownRemaining <= 0 && _firedAt) {
-      const elapsed = (Date.now() / 1000) - _firedAt;
-      if (elapsed >= TOTAL_CYCLE) {
-        _firedAt = 0;
+      if (_cooldownRemaining <= 0) {
+        clearInterval(_tickInterval);
+        _tickInterval = null;
       }
-    }
-
-    renderPumpUI();
+    }, 1000);
   }
 
-  // ── HTTP fallback: fetch initial pump state (page load) ─────────────────────
-  async function fetchPumpStatusOnce() {
+  // ── Server sync — called on page load and every 5 s ──────────────────────────
+  async function syncPumpStatus() {
     try {
-      const res  = await fetch(API_BASE + '/pump-status');
-      const data = await res.json();
-      applyServerState(
-        data.pumping || false,
-        data.cooldown_remaining || 0,
-        data.fired_at || 0
-      );
+      var res  = await fetch(API_BASE + '/pump-status');
+      var data = await res.json();
+
+      var serverRemaining = data.remaining || 0;
+
+      // serverRemaining > _cooldownTotal (20) means pump is still physically running.
+      // Calculate exactly how much run time is left so Device B shows "Watering..."
+      // for only the true remaining duration, not a stale full 5 seconds.
+      if (serverRemaining > _cooldownTotal) {
+        if (!_pumpRunning) {
+          // Device B catching the run phase mid-flight — precise timeout
+          _pumpRunning = true;
+          applyPumpUI();
+          var runMsLeft = (serverRemaining - _cooldownTotal) * 1000;
+          setTimeout(async function() {
+            _pumpRunning = false;
+            await syncPumpStatus();       // fetch true cooldown remaining right now
+            clearInterval(_syncInterval);
+            _syncInterval = setInterval(syncPumpStatus, 5000);
+          }, runMsLeft);
+        }
+        // Device A already running locally — triggerPump() handles its timeout
+        return;
+      }
+
+      // Pump run phase over — cooldown or idle
+      _pumpRunning = false;
+
+      // Snap to server if drift > 3 s — absorbs jitter, corrects real state changes
+      if (Math.abs(serverRemaining - _cooldownRemaining) > 3) {
+        _cooldownRemaining = serverRemaining;
+      }
+
+      applyPumpUI();
+      if (_cooldownRemaining > 0) startTick();
+
     } catch (e) {
-      console.warn('pump-status fetch failed:', e);
+      console.warn('pump-status sync failed:', e);
     }
   }
 
-  // ── Button handler ──────────────────────────────────────────────────────────
+  // ── Button handler ────────────────────────────────────────────────────────────
   async function triggerPump() {
-    const btn = document.getElementById('pump-btn');
+    var btn = document.getElementById('pump-btn');
     if (!btn || btn.disabled) return;
 
-    btn.disabled    = true;
-    btn.textContent = '⏳ Sending...';
+    // Optimistic lock so double-taps can't fire two requests
+    btn.disabled  = true;
+    _pumpRunning  = true;
+    applyPumpUI();
 
     try {
-      const res  = await fetch(API_BASE + '/pump', { method: 'POST' });
-      const data = await res.json();
+      var res  = await fetch(API_BASE + '/pump', { method: 'POST' });
+      var data = await res.json();
 
       if (res.status === 429) {
-        applyServerState(
-          data.pumping || false,
-          data.cooldown_remaining || 0,
-          data.fired_at || 0
-        );
+        // Server says still in cooldown (race condition — another device just fired)
+        _pumpRunning       = false;
+        _cooldownRemaining = data.remaining || _cooldownTotal;
+        applyPumpUI();
+        startTick();
+
       } else if (res.ok) {
-        applyServerState(
-          data.pumping !== undefined ? data.pumping : true,
-          data.cooldown_remaining || COOLDOWN_SECONDS,
-          data.fired_at || (Date.now() / 1000)
-        );
+        // Pump fired — show "Watering..." for 5 s (actual pump run time)
+        // _cooldownTotal stays hardcoded at 20 — never read from server
+
+        setTimeout(async function() {
+          _pumpRunning = false;
+          await syncPumpStatus();
+          clearInterval(_syncInterval);
+          _syncInterval = setInterval(syncPumpStatus, 5000);
+        }, 5000);
+
       } else {
-        _firedAt = 0;
-        renderPumpUI();
+        // Unexpected error — reset silently, no popup
+        _pumpRunning = false;
+        _cooldownRemaining = 0;
+        applyPumpUI();
         document.getElementById('pump-status-text').textContent = 'Error — try again';
       }
+
     } catch (e) {
       console.error('Pump error:', e);
-      _firedAt = 0;
-      renderPumpUI();
+      _pumpRunning = false;
+      _cooldownRemaining = 0;
+      applyPumpUI();
       document.getElementById('pump-status-text').textContent = 'Connection error';
     }
   }
 
-  // ── AWS IoT MQTT connection setup ───────────────────────────────────────────
-  async function connectIoT() {
-    try {
-      const { mqtt, auth } = aws_iot_device_sdk;
-
-      const cognitoCredentials = new auth.CognitoCredentialsProvider({
-        identityPoolId: COGNITO_IDENTITY_POOL_ID,
-        region: 'ap-southeast-1'
-      });
-
-      const config = {
-        clientId: 'dashboard_' + Math.random().toString(36).substring(2, 12),
-        credentialsProvider: cognitoCredentials,
-        region: 'ap-southeast-1',
-        keepAlive: 30
-      };
-
-      mqttClient = new mqtt.MqttClient(config);
-      await mqttClient.connect();
-      console.log('MQTT connected to AWS IoT Core');
-
-      await mqttClient.subscribe(AWS_IOT_TOPIC, mqtt.QoS.AtLeastOnce);
-      console.log('Subscribed to', AWS_IOT_TOPIC);
-
-      mqttClient.on('message', (topic, payload) => {
-        if (topic === AWS_IOT_TOPIC) {
-          try {
-            const msg = JSON.parse(new TextDecoder().decode(payload));
-            applyServerState(
-              msg.pumping || false,
-              msg.cooldown_remaining || 0,
-              msg.fired_at || 0
-            );
-          } catch (e) {
-            console.warn('MQTT message parse error:', e);
-          }
-        }
-      });
-
-      mqttClient.on('error', (err) => {
-        console.warn('MQTT error:', err);
-      });
-
-      mqttClient.on('disconnect', () => {
-        console.warn('MQTT disconnected — reconnecting in 3s');
-        setTimeout(connectIoT, 3000);
-      });
-    } catch (e) {
-      console.error('MQTT connection failed, retrying in 5s:', e);
-      setTimeout(connectIoT, 5000);
-    }
-  }
-
-  // ── Charts and sensor data ──────────────────────────────────────────────────
+  // ── Charts ────────────────────────────────────────────────────────────────────
   function initCharts() {
     tempChart = new Chart(document.getElementById('tempChart'), {
       type: 'line',
@@ -498,23 +445,23 @@
     });
   }
 
+  // ── Sensor data ───────────────────────────────────────────────────────────────
   async function fetchData() {
     try {
-      const res  = await fetch(API_BASE + '/sensor');
-      const data = await res.json();
+      var res  = await fetch(API_BASE + '/sensor');
+      var data = await res.json();
 
       document.getElementById('temp').textContent     = data.temperature.toFixed(1);
       document.getElementById('humidity').textContent = data.humidity.toFixed(1);
       document.getElementById('last-updated').textContent = new Date().toLocaleTimeString();
 
-      const isNew = lastTimestamp !== data.timestamp;
+      var isNew     = lastTimestamp !== data.timestamp;
       lastTimestamp = data.timestamp;
 
-      // Reverse to chronological order for charts
-      const chronological = data.history.slice().reverse();
-      const labels = chronological.map(r => formatTimeShort(r.timestamp));
-      const temps  = chronological.map(r => r.temperature);
-      const humids = chronological.map(r => r.humidity);
+      var chronological = data.history.slice().reverse();
+      var labels = chronological.map(function(r) { return formatTimeShort(r.timestamp); });
+      var temps  = chronological.map(function(r) { return r.temperature; });
+      var humids = chronological.map(function(r) { return r.humidity; });
 
       tempChart.data.labels              = labels;
       tempChart.data.datasets[0].data   = temps;
@@ -524,8 +471,8 @@
       humidChart.data.datasets[0].data  = humids;
       humidChart.update();
 
-      const tbody = document.getElementById('history-body');
-      tbody.innerHTML = data.history.map((row, i) => {
+      var tbody = document.getElementById('history-body');
+      tbody.innerHTML = data.history.map(function(row, i) {
         return '<tr class="' + (i === 0 && isNew ? 'new-row' : '') + '">' +
           '<td style="color:#475569">' + (i + 1) + '</td>' +
           '<td>' + formatDate(row.timestamp) + '</td>' +
@@ -533,27 +480,24 @@
           '<td class="humid-val">' + row.humidity.toFixed(1) + ' %</td>' +
           '</tr>';
       }).join('');
+
     } catch (e) {
       console.error('Fetch error:', e);
       document.getElementById('last-updated').textContent = 'Connection error';
     }
   }
 
-  // ── Bootstrap ───────────────────────────────────────────────────────────────
+  // ── Bootstrap ─────────────────────────────────────────────────────────────────
   window.onload = function() {
     initCharts();
 
+    // Sensor data — fetch immediately then every 5 s
     fetchData();
-    setInterval(fetchData, 2000);
+    setInterval(fetchData, 5000);
 
-    // Get initial pump state from HTTP (in case MQTT connects after a pump cycle started)
-    fetchPumpStatusOnce();
-
-    // Connect MQTT for real-time updates (no WebSocket, no polling!)
-    connectIoT();
-
-    // Start the smooth countdown render loop
-    startSyncLoop();
+    // Pump status — fetch immediately (fixes refresh-reset bug) then every 5 s
+    syncPumpStatus();
+    _syncInterval = setInterval(syncPumpStatus, 1000);
   };
 </script>
 </body>
