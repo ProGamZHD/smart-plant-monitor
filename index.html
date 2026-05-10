@@ -1,0 +1,509 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Smart Plant Monitor</title>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+      background: #0a0e1a;
+      color: #e2e8f0;
+      min-height: 100vh;
+      padding: 40px 24px;
+    }
+    .container { max-width: 960px; margin: 0 auto; }
+    header { text-align: center; margin-bottom: 48px; }
+    header h1 { font-size: 2rem; font-weight: 700; }
+    header p { font-size: 0.85rem; color: #64748b; margin-top: 6px; }
+    .cards { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; margin-bottom: 20px; }
+    @media (max-width: 480px) { .cards { grid-template-columns: 1fr; } }
+    .card {
+      background: #111827;
+      border: 1px solid #1f2937;
+      border-radius: 20px;
+      padding: 28px 32px;
+      position: relative;
+      overflow: hidden;
+    }
+    .card::before {
+      content: '';
+      position: absolute;
+      top: 0; left: 0; right: 0;
+      height: 3px;
+      border-radius: 20px 20px 0 0;
+    }
+    .card.temp::before   { background: linear-gradient(90deg, #f6ad55, #ed8936); }
+    .card.humid::before  { background: linear-gradient(90deg, #63b3ed, #4299e1); }
+    .card.pump::before   { background: linear-gradient(90deg, #52b788, #2d6a4f); }
+    .card .icon  { font-size: 1.8rem; margin-bottom: 12px; }
+    .card .label { font-size: 0.75rem; text-transform: uppercase; letter-spacing: 0.1em; color: #64748b; margin-bottom: 8px; }
+    .card .value { font-size: 3.5rem; font-weight: 800; line-height: 1; }
+    .card .unit  { font-size: 1rem; color: #64748b; margin-top: 4px; }
+    .card.temp .value  { color: #f6ad55; }
+    .card.humid .value { color: #63b3ed; }
+    .pump-card-inner { display: flex; flex-direction: column; gap: 16px; }
+    .pump-status-row { display: flex; align-items: center; gap: 10px; }
+    .pump-indicator {
+      width: 12px; height: 12px;
+      border-radius: 50%;
+      background: #4a5568;
+      flex-shrink: 0;
+    }
+    .pump-indicator.idle     { background: #4a5568; }
+    .pump-indicator.running  { background: #52b788; animation: pulse 1s infinite; }
+    .pump-indicator.cooldown { background: #f6ad55; }
+    @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:0.3} }
+    .pump-status-text { font-size: 0.9rem; color: #94a3b8; }
+    #pump-btn {
+      background: #1a3a2a;
+      border: 1px solid #2d6a4f;
+      color: #52b788;
+      padding: 10px 20px;
+      border-radius: 10px;
+      cursor: pointer;
+      font-size: 0.85rem;
+      font-weight: 600;
+      width: 100%;
+      text-align: center;
+      transition: background 0.2s;
+    }
+    #pump-btn:hover  { background: #2d6a4f; color: #fff; }
+    #pump-btn:disabled { opacity: 0.5; cursor: not-allowed; }
+    .cooldown-bar-wrap {
+      background: #1f2937;
+      border-radius: 999px;
+      height: 4px;
+      overflow: hidden;
+      display: none;
+    }
+    .cooldown-bar {
+      height: 100%;
+      background: #f6ad55;
+      border-radius: 999px;
+      width: 100%;
+      transition: width 1s linear;
+    }
+    .status-bar {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      flex-wrap: wrap;
+      gap: 12px;
+      background: #111827;
+      border: 1px solid #1f2937;
+      border-radius: 12px;
+      padding: 12px 20px;
+      font-size: 0.8rem;
+      color: #64748b;
+      margin-bottom: 28px;
+    }
+    .live-badge { display: flex; align-items: center; gap: 6px; color: #48bb78; font-weight: 600; }
+    .dot { width: 8px; height: 8px; border-radius: 50%; background: #48bb78; animation: pulse 2s infinite; }
+    .chart-box {
+      background: #111827;
+      border: 1px solid #1f2937;
+      border-radius: 20px;
+      padding: 24px;
+      margin-bottom: 28px;
+    }
+    .chart-title {
+      font-size: 0.75rem;
+      text-transform: uppercase;
+      letter-spacing: 0.1em;
+      color: #64748b;
+      margin-bottom: 16px;
+    }
+    .section-title {
+      font-size: 0.75rem;
+      text-transform: uppercase;
+      letter-spacing: 0.1em;
+      color: #64748b;
+      margin-bottom: 12px;
+    }
+    .history-wrapper { background: #111827; border: 1px solid #1f2937; border-radius: 20px; overflow: hidden; }
+    .history-table-wrap { max-height: 360px; overflow-y: auto; }
+    .history-table-wrap::-webkit-scrollbar { width: 6px; }
+    .history-table-wrap::-webkit-scrollbar-thumb { background: #2d3748; border-radius: 3px; }
+    table { width: 100%; border-collapse: collapse; font-size: 0.875rem; }
+    thead { position: sticky; top: 0; background: #0f172a; z-index: 1; }
+    th {
+      padding: 14px 20px;
+      text-align: left;
+      font-size: 0.7rem;
+      text-transform: uppercase;
+      letter-spacing: 0.1em;
+      color: #64748b;
+      font-weight: 600;
+      border-bottom: 1px solid #1f2937;
+    }
+    td { padding: 12px 20px; border-bottom: 1px solid #1a2234; color: #cbd5e1; }
+    tr:last-child td { border-bottom: none; }
+    tr:hover td { background: #1a2234; }
+    .temp-val  { color: #f6ad55; font-weight: 600; }
+    .humid-val { color: #63b3ed; font-weight: 600; }
+    @keyframes fadeIn { from{background:#1e3a2f} to{background:transparent} }
+    .new-row { animation: fadeIn 0.4s ease; }
+  </style>
+</head>
+<body>
+<div class="container">
+  <header>
+    <h1>🌿 Smart Plant Monitor</h1>
+    <p>Real-time environmental sensor dashboard</p>
+  </header>
+
+  <div class="cards">
+    <div class="card temp">
+      <div class="icon">🌡️</div>
+      <div class="label">Temperature</div>
+      <div class="value" id="temp">--</div>
+      <div class="unit">°C</div>
+    </div>
+    <div class="card humid">
+      <div class="icon">💧</div>
+      <div class="label">Humidity</div>
+      <div class="value" id="humidity">--</div>
+      <div class="unit">%</div>
+    </div>
+  </div>
+
+  <!-- Pump Control Card -->
+  <div class="card pump" style="margin-bottom: 20px;">
+    <div class="icon">🚿</div>
+    <div class="label">Water Pump</div>
+    <div class="pump-card-inner">
+      <div class="pump-status-row">
+        <div class="pump-indicator idle" id="pump-indicator"></div>
+        <span class="pump-status-text" id="pump-status-text">Checking...</span>
+      </div>
+      <div class="cooldown-bar-wrap" id="cooldown-bar-wrap">
+        <div class="cooldown-bar" id="cooldown-bar"></div>
+      </div>
+      <button id="pump-btn" onclick="triggerPump()">💧 Water Now</button>
+    </div>
+  </div>
+
+  <div class="status-bar">
+    <div class="live-badge">
+      <span class="dot"></span>
+      LIVE
+    </div>
+    <span>Updates every 5 seconds</span>
+    <span>Last updated: <strong id="last-updated">loading...</strong></span>
+  </div>
+
+  <div class="chart-box">
+    <p class="chart-title">🌡️ Temperature — last 100 readings (°C)</p>
+    <canvas id="tempChart" height="120"></canvas>
+  </div>
+
+  <div class="chart-box">
+    <p class="chart-title">💧 Humidity — last 100 readings (%)</p>
+    <canvas id="humidChart" height="120"></canvas>
+  </div>
+
+  <p class="section-title">History — last 100 readings</p>
+  <div class="history-wrapper">
+    <div class="history-table-wrap">
+      <table>
+        <thead>
+          <tr>
+            <th>#</th>
+            <th>Time</th>
+            <th>Temperature</th>
+            <th>Humidity</th>
+          </tr>
+        </thead>
+        <tbody id="history-body">
+          <tr><td colspan="4" style="color:#64748b;text-align:center;padding:32px">Loading...</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+</div>
+
+<script>
+  const API_BASE = 'https://ysxbsbrjwe.execute-api.ap-southeast-1.amazonaws.com';
+
+  let lastTimestamp  = null;
+  let tempChart      = null;
+  let humidChart     = null;
+
+  // ── Pump state (all driven by server, never reset on refresh) ────────────────
+  let _cooldownRemaining = 0;
+  let _cooldownTotal     = 20;               // cooldown after pump stops
+  let _tickInterval      = null;
+  let _pumpRunning       = false;
+
+  // Adaptive polling
+  let _pumpPollTimer     = null;
+  let _pumpPollFast      = false;
+
+  // ── Helpers ───────────────────────────────────────────────────────────────────
+  function formatDate(ts) {
+    var d = new Date(parseInt(ts));
+    return d.toLocaleDateString([], { month: 'short', day: 'numeric' })
+      + ' ' + d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+  }
+
+  function formatTimeShort(ts) {
+    return new Date(parseInt(ts)).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+  }
+
+  // ── Pump UI ───────────────────────────────────────────────────────────────────
+  function applyPumpUI() {
+    var btn       = document.getElementById('pump-btn');
+    var indicator = document.getElementById('pump-indicator');
+    var statusTxt = document.getElementById('pump-status-text');
+    var barWrap   = document.getElementById('cooldown-bar-wrap');
+    var bar       = document.getElementById('cooldown-bar');
+
+    if (_pumpRunning) {
+      indicator.className      = 'pump-indicator running';
+      statusTxt.textContent    = 'Pump running';
+      btn.textContent          = '⏳ Watering...';
+      btn.disabled             = true;
+      barWrap.style.display    = 'none';
+      return;
+    }
+
+    if (_cooldownRemaining > 0) {
+      indicator.className      = 'pump-indicator cooldown';
+      statusTxt.textContent    = 'Cooling down';
+      btn.textContent          = '⏳ Cooldown — ' + _cooldownRemaining + 's';
+      btn.disabled             = true;
+      barWrap.style.display    = 'block';
+      bar.style.width          = ((_cooldownRemaining / _cooldownTotal) * 100) + '%';
+    } else {
+      indicator.className      = 'pump-indicator idle';
+      statusTxt.textContent    = 'Idle';
+      btn.textContent          = '💧 Water Now';
+      btn.disabled             = false;
+      barWrap.style.display    = 'none';
+    }
+  }
+
+  function startTick() {
+    if (_tickInterval) return;
+    _tickInterval = setInterval(function() {
+      if (_cooldownRemaining > 0) {
+        _cooldownRemaining--;
+        applyPumpUI();
+      }
+      if (_cooldownRemaining <= 0) {
+        clearInterval(_tickInterval);
+        _tickInterval = null;
+      }
+    }, 1000);
+  }
+
+  // ── Adaptive polling: speed up when pump is active ─────────────────────────
+  function updatePumpPolling(remaining) {
+    const shouldBeFast = (remaining > 0);
+    if (shouldBeFast === _pumpPollFast) return;   // no change needed
+    _pumpPollFast = shouldBeFast;
+    if (_pumpPollTimer) clearInterval(_pumpPollTimer);
+    const interval = shouldBeFast ? 1000 : 30000;  // 1s when active, 30s idle
+    _pumpPollTimer = setInterval(syncPumpStatus, interval);
+  }
+
+  // ── Server sync ──────────────────────────────────────────────────────────────
+  async function syncPumpStatus() {
+    try {
+      var res  = await fetch(API_BASE + '/pump-status');
+      var data = await res.json();
+
+      var serverRemaining = data.remaining || 0;
+
+      // serverRemaining > _cooldownTotal (20) means pump is still physically running.
+      if (serverRemaining > _cooldownTotal) {
+        if (!_pumpRunning) {
+          // Device catching the run phase mid-flight – set precise timeout
+          _pumpRunning = true;
+          applyPumpUI();
+          var runMsLeft = (serverRemaining - _cooldownTotal) * 1000;
+          setTimeout(async function() {
+            _pumpRunning = false;
+            await syncPumpStatus();        // fetch true cooldown remaining now
+          }, runMsLeft);
+        }
+        // Pump still running; adjust polling interval if needed
+        updatePumpPolling(serverRemaining);
+        return;
+      }
+
+      // Pump run phase over – cooldown or idle
+      _pumpRunning = false;
+
+      // Snap to server if drift > 3 seconds (e.g. after page focus)
+      if (Math.abs(serverRemaining - _cooldownRemaining) > 3) {
+        _cooldownRemaining = serverRemaining;
+      }
+
+      applyPumpUI();
+      if (_cooldownRemaining > 0) startTick();
+
+      // Update polling speed based on current state
+      updatePumpPolling(serverRemaining);
+
+    } catch (e) {
+      console.warn('pump-status sync failed:', e);
+    }
+  }
+
+  // ── Button handler ────────────────────────────────────────────────────────────
+  async function triggerPump() {
+    var btn = document.getElementById('pump-btn');
+    if (!btn || btn.disabled) return;
+
+    btn.disabled  = true;
+    _pumpRunning  = true;
+    applyPumpUI();
+
+    try {
+      var res  = await fetch(API_BASE + '/pump', { method: 'POST' });
+      var data = await res.json();
+
+      if (res.status === 429) {
+        // Another device fired – show cooldown
+        _pumpRunning       = false;
+        _cooldownRemaining = data.remaining || _cooldownTotal;
+        applyPumpUI();
+        startTick();
+
+      } else if (res.ok) {
+        // Pump successfully fired – show "Watering..." for 5 seconds
+        setTimeout(async function() {
+          _pumpRunning = false;
+          await syncPumpStatus();        // fetch the current cooldown state
+        }, 5000);
+
+      } else {
+        // Unexpected error
+        _pumpRunning = false;
+        _cooldownRemaining = 0;
+        applyPumpUI();
+        document.getElementById('pump-status-text').textContent = 'Error — try again';
+      }
+
+    } catch (e) {
+      console.error('Pump error:', e);
+      _pumpRunning = false;
+      _cooldownRemaining = 0;
+      applyPumpUI();
+      document.getElementById('pump-status-text').textContent = 'Connection error';
+    }
+  }
+
+  // ── Charts ────────────────────────────────────────────────────────────────────
+  function initCharts() {
+    tempChart = new Chart(document.getElementById('tempChart'), {
+      type: 'line',
+      data: {
+        labels: [],
+        datasets: [{
+          data: [],
+          borderColor: '#f6ad55',
+          backgroundColor: 'rgba(246,173,85,0.08)',
+          borderWidth: 2,
+          pointRadius: 0,
+          fill: true,
+          tension: 0.4
+        }]
+      },
+      options: {
+        responsive: true,
+        animation: { duration: 300 },
+        plugins: { legend: { display: false } },
+        scales: {
+          x: { ticks: { color: '#475569', maxTicksLimit: 8, maxRotation: 0 }, grid: { color: '#1f2937' } },
+          y: { suggestedMin: 20, suggestedMax: 40, ticks: { color: '#475569' }, grid: { color: '#1f2937' } }
+        }
+      }
+    });
+
+    humidChart = new Chart(document.getElementById('humidChart'), {
+      type: 'line',
+      data: {
+        labels: [],
+        datasets: [{
+          data: [],
+          borderColor: '#63b3ed',
+          backgroundColor: 'rgba(99,179,237,0.08)',
+          borderWidth: 2,
+          pointRadius: 0,
+          fill: true,
+          tension: 0.4
+        }]
+      },
+      options: {
+        responsive: true,
+        animation: { duration: 300 },
+        plugins: { legend: { display: false } },
+        scales: {
+          x: { ticks: { color: '#475569', maxTicksLimit: 8, maxRotation: 0 }, grid: { color: '#1f2937' } },
+          y: { suggestedMin: 40, suggestedMax: 100, ticks: { color: '#475569' }, grid: { color: '#1f2937' } }
+        }
+      }
+    });
+  }
+
+  // ── Sensor data ───────────────────────────────────────────────────────────────
+  async function fetchData() {
+    try {
+      var res  = await fetch(API_BASE + '/sensor');
+      var data = await res.json();
+
+      document.getElementById('temp').textContent     = data.temperature.toFixed(1);
+      document.getElementById('humidity').textContent = data.humidity.toFixed(1);
+      document.getElementById('last-updated').textContent = new Date().toLocaleTimeString();
+
+      var isNew     = lastTimestamp !== data.timestamp;
+      lastTimestamp = data.timestamp;
+
+      var chronological = data.history.slice().reverse();
+      var labels = chronological.map(function(r) { return formatTimeShort(r.timestamp); });
+      var temps  = chronological.map(function(r) { return r.temperature; });
+      var humids = chronological.map(function(r) { return r.humidity; });
+
+      tempChart.data.labels              = labels;
+      tempChart.data.datasets[0].data   = temps;
+      tempChart.update();
+
+      humidChart.data.labels             = labels;
+      humidChart.data.datasets[0].data  = humids;
+      humidChart.update();
+
+      var tbody = document.getElementById('history-body');
+      tbody.innerHTML = data.history.map(function(row, i) {
+        return '<tr class="' + (i === 0 && isNew ? 'new-row' : '') + '">' +
+          '<td style="color:#475569">' + (i + 1) + '</td>' +
+          '<td>' + formatDate(row.timestamp) + '</td>' +
+          '<td class="temp-val">' + row.temperature.toFixed(1) + ' °C</td>' +
+          '<td class="humid-val">' + row.humidity.toFixed(1) + ' %</td>' +
+          '</tr>';
+      }).join('');
+
+    } catch (e) {
+      console.error('Fetch error:', e);
+      document.getElementById('last-updated').textContent = 'Connection error';
+    }
+  }
+
+  // ── Bootstrap ─────────────────────────────────────────────────────────────────
+  window.onload = function() {
+    initCharts();
+
+    // Sensor data every 5 seconds
+    fetchData();
+    setInterval(fetchData, 5000);
+
+    syncPumpStatus();
+    setInterval(syncPumpStatus, 1000);   // poll every 1 second, forever
+  };
+</script>
+</body>
+</html>
