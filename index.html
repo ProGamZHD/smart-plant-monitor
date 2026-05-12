@@ -1,0 +1,1142 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Smart Plant Monitor</title>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>
+  <!-- Cognito auth library (requires window.global polyfill for browser) -->
+  <script>window.global = window;</script>
+  <script src="https://unpkg.com/amazon-cognito-identity-js/dist/amazon-cognito-identity.min.js"></script>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+      background: #0a0e1a;
+      color: #e2e8f0;
+      min-height: 100vh;
+      padding: 40px 24px 100px;   /* bottom padding leaves room for admin bar */
+    }
+    .container { max-width: 960px; margin: 0 auto; }
+
+    /* ── Header ── */
+    header {
+      text-align: center;
+      margin-bottom: 48px;
+      position: relative;
+    }
+    header h1 { font-size: 2rem; font-weight: 700; }
+    header p  { font-size: 0.85rem; color: #64748b; margin-top: 6px; }
+    .admin-login-btn {
+      position: absolute;
+      top: 0; right: 0;
+      background: none;
+      border: 1px solid #1f2937;
+      border-radius: 8px;
+      color: #475569;
+      font-size: 1rem;
+      padding: 6px 10px;
+      cursor: pointer;
+      transition: color 0.2s, border-color 0.2s;
+    }
+    .admin-login-btn:hover { color: #94a3b8; border-color: #374151; }
+    .admin-login-btn.authed { color: #52b788; border-color: #2d6a4f; }
+
+    /* ── Cards ── */
+    .cards { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; margin-bottom: 20px; }
+    @media (max-width: 480px) { .cards { grid-template-columns: 1fr; } }
+
+    .card {
+      background: #111827;
+      border: 1px solid #1f2937;
+      border-radius: 20px;
+      padding: 28px 32px;
+      position: relative;
+      overflow: hidden;
+    }
+    .card::before {
+      content: '';
+      position: absolute;
+      top: 0; left: 0; right: 0;
+      height: 3px;
+      border-radius: 20px 20px 0 0;
+    }
+    .card.temp::before  { background: linear-gradient(90deg, #f6ad55, #ed8936); }
+    .card.humid::before { background: linear-gradient(90deg, #63b3ed, #4299e1); }
+    .card.light::before { background: linear-gradient(90deg, #fde68a, #f6e05e); }
+    .card.water::before { background: linear-gradient(90deg, #2dd4bf, #0891b2); }
+    .card.pump::before  { background: linear-gradient(90deg, #52b788, #2d6a4f); }
+
+    .card .icon  { font-size: 1.8rem; margin-bottom: 12px; }
+    .card .label { font-size: 0.75rem; text-transform: uppercase; letter-spacing: 0.1em; color: #64748b; margin-bottom: 8px; }
+    .card .value { font-size: 3.5rem; font-weight: 800; line-height: 1; }
+    .card .unit  { font-size: 1rem; color: #64748b; margin-top: 4px; }
+    .card.temp  .value { color: #f6ad55; }
+    .card.humid .value { color: #63b3ed; }
+    .card.light .value { color: #fde68a; }
+    .card.water .value { color: #2dd4bf; }
+
+    .card.light .lux-label  { font-size: 0.75rem; color: #94a3b8; margin-top: 6px; }
+    .card.water .water-label { font-size: 0.75rem; color: #94a3b8; margin-top: 6px; }
+
+    /* ── Pump card ── */
+    .pump-history-wrapper { background: #111827; border: 1px solid #1f2937; border-radius: 20px; overflow: hidden; margin-bottom: 28px; }
+    .pump-history-wrap    { max-height: 260px; overflow-y: auto; }
+    .pump-history-wrap::-webkit-scrollbar       { width: 6px; }
+    .pump-history-wrap::-webkit-scrollbar-thumb { background: #2d3748; border-radius: 3px; }
+    .pump-fired-val { color: #52b788; font-weight: 600; }
+
+    .pump-card-inner  { display: flex; flex-direction: column; gap: 16px; }
+    .pump-status-row  { display: flex; align-items: center; gap: 10px; }
+    .pump-indicator   { width: 12px; height: 12px; border-radius: 50%; background: #4a5568; flex-shrink: 0; }
+    .pump-indicator.idle     { background: #4a5568; }
+    .pump-indicator.running  { background: #52b788; animation: pulse 1s infinite; }
+    .pump-indicator.cooldown { background: #f6ad55; }
+    @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:0.3} }
+    .pump-status-text { font-size: 0.9rem; color: #94a3b8; }
+    #pump-btn {
+      background: #1a3a2a;
+      border: 1px solid #2d6a4f;
+      color: #52b788;
+      padding: 10px 20px;
+      border-radius: 10px;
+      cursor: pointer;
+      font-size: 0.85rem;
+      font-weight: 600;
+      width: 100%;
+      text-align: center;
+      transition: background 0.2s;
+    }
+    #pump-btn:hover:not(:disabled) { background: #2d6a4f; color: #fff; }
+    #pump-btn:disabled { opacity: 0.5; cursor: not-allowed; }
+    #pump-login-hint { font-size: 0.75rem; color: #475569; text-align: center; padding: 6px 0; }
+    .cooldown-bar-wrap {
+      background: #1f2937; border-radius: 999px; height: 4px; overflow: hidden; display: none;
+    }
+    .cooldown-bar {
+      height: 100%; background: linear-gradient(90deg, #f6ad55, #ed8936);
+      border-radius: 999px; width: 100%; transition: width 0.2s linear; will-change: width;
+    }
+
+    /* ── Status bar ── */
+    .status-bar {
+      display: flex; align-items: center; justify-content: space-between;
+      flex-wrap: nowrap; gap: 8px;
+      background: #111827; border: 1px solid #1f2937; border-radius: 12px;
+      padding: 10px 16px; font-size: 0.75rem; color: #64748b; margin-bottom: 28px;
+    }
+    .live-badge { display: flex; align-items: center; gap: 6px; color: #48bb78; font-weight: 600; }
+    .ws-badge   { display: flex; align-items: center; gap: 6px; font-weight: 600; }
+    .ws-badge.connected    { color: #48bb78; }
+    .ws-badge.disconnected { color: #f6ad55; }
+    .dot { width: 8px; height: 8px; border-radius: 50%; background: currentColor; animation: pulse 2s infinite; }
+
+    /* ── Charts & history ── */
+    .chart-box {
+      background: #111827; border: 1px solid #1f2937;
+      border-radius: 20px; padding: 24px; margin-bottom: 28px;
+    }
+    .chart-title   { font-size: 0.75rem; text-transform: uppercase; letter-spacing: 0.1em; color: #64748b; margin-bottom: 16px; }
+    .section-title { font-size: 0.75rem; text-transform: uppercase; letter-spacing: 0.1em; color: #64748b; margin-bottom: 12px; }
+    .history-wrapper     { background: #111827; border: 1px solid #1f2937; border-radius: 20px; overflow: hidden; }
+    .history-table-wrap  { max-height: 360px; overflow-y: auto; }
+    .history-table-wrap::-webkit-scrollbar       { width: 6px; }
+    .history-table-wrap::-webkit-scrollbar-thumb { background: #2d3748; border-radius: 3px; }
+    table { width: 100%; border-collapse: collapse; font-size: 0.875rem; }
+    thead { position: sticky; top: 0; background: #0f172a; z-index: 1; }
+    th { padding: 14px 20px; text-align: left; font-size: 0.7rem; text-transform: uppercase; letter-spacing: 0.1em; color: #64748b; font-weight: 600; border-bottom: 1px solid #1f2937; }
+    td { padding: 12px 20px; border-bottom: 1px solid #1a2234; color: #cbd5e1; }
+    tr:last-child td { border-bottom: none; }
+    tr:hover td { background: #1a2234; }
+    .temp-val  { color: #f6ad55; font-weight: 600; }
+    .humid-val { color: #63b3ed; font-weight: 600; }
+    .light-val { color: #fde68a; font-weight: 600; }
+    .water-val { color: #2dd4bf; font-weight: 600; }
+    @keyframes fadeIn { from{background:#1e3a2f} to{background:transparent} }
+    .new-row { animation: fadeIn 0.4s ease; }
+
+    /* ── Login Modal ── */
+    .login-overlay {
+      position: fixed; inset: 0;
+      background: rgba(0,0,0,0.7);
+      backdrop-filter: blur(4px);
+      display: flex; align-items: center; justify-content: center;
+      z-index: 1000;
+    }
+    .login-card {
+      background: #111827;
+      border: 1px solid #1f2937;
+      border-radius: 20px;
+      padding: 36px 32px;
+      width: 100%; max-width: 360px;
+      display: flex; flex-direction: column; gap: 14px;
+      position: relative;
+    }
+    .login-card h2 { font-size: 1.2rem; font-weight: 700; text-align: center; }
+    .login-card p  { font-size: 0.8rem; color: #64748b; text-align: center; margin-top: -8px; }
+    .login-close {
+      position: absolute; top: 16px; right: 16px;
+      background: none; border: none; color: #475569; font-size: 1.2rem; cursor: pointer;
+    }
+    .login-close:hover { color: #94a3b8; }
+    .login-input {
+      background: #0f172a; border: 1px solid #1f2937; border-radius: 10px;
+      color: #e2e8f0; font-size: 0.9rem; padding: 12px 14px; width: 100%;
+      outline: none; transition: border-color 0.2s;
+    }
+    .login-input:focus { border-color: #2d6a4f; }
+    .login-btn {
+      background: #1a3a2a; border: 1px solid #2d6a4f; color: #52b788;
+      padding: 12px; border-radius: 10px; cursor: pointer; font-size: 0.9rem;
+      font-weight: 600; width: 100%; transition: background 0.2s;
+    }
+    .login-btn:hover:not(:disabled) { background: #2d6a4f; color: #fff; }
+    .login-btn:disabled { opacity: 0.5; cursor: not-allowed; }
+    .login-error {
+      background: #1c1010; border: 1px solid #7f1d1d; border-radius: 8px;
+      color: #fca5a5; font-size: 0.8rem; padding: 10px 12px; display: none;
+    }
+
+    /* ── Private Screen ── */
+    .private-screen {
+      display: none; flex-direction: column; align-items: center;
+      justify-content: center; min-height: 60vh; text-align: center; gap: 16px;
+    }
+    .private-screen .lock-icon { font-size: 4rem; }
+    .private-screen h2 { font-size: 1.4rem; font-weight: 700; color: #94a3b8; }
+    .private-screen p  { font-size: 0.9rem; color: #475569; max-width: 320px; line-height: 1.6; }
+
+    /* ── Admin Bar ── */
+    .admin-bar {
+      position: fixed; bottom: 0; left: 0; right: 0;
+      background: #0d1f14;
+      border-top: 1px solid #2d6a4f;
+      display: none; align-items: center; justify-content: space-between;
+      gap: 16px; padding: 12px 24px;
+      z-index: 500; flex-wrap: wrap;
+    }
+    .admin-bar-left  { display: flex; align-items: center; gap: 10px; }
+    .admin-bar-right { display: flex; align-items: center; gap: 16px; }
+    .admin-avatar {
+      width: 28px; height: 28px; border-radius: 50%;
+      background: #1a3a2a; border: 1px solid #2d6a4f;
+      display: flex; align-items: center; justify-content: center;
+      font-size: 0.8rem;
+    }
+    .admin-username { font-size: 0.8rem; color: #52b788; font-weight: 600; }
+    .admin-role     { font-size: 0.7rem; color: #2d6a4f; }
+    .public-toggle-group { display: flex; align-items: center; gap: 10px; }
+    .public-toggle-label { font-size: 0.8rem; color: #94a3b8; }
+    .public-toggle-state {
+      font-size: 0.75rem; font-weight: 700; padding: 2px 8px;
+      border-radius: 999px; min-width: 48px; text-align: center;
+    }
+    .public-toggle-state.on  { background: #1a3a2a; color: #52b788; }
+    .public-toggle-state.off { background: #1c1010; color: #f87171; }
+
+    /* Toggle switch */
+    .toggle-switch { position: relative; display: inline-block; width: 44px; height: 24px; cursor: pointer; }
+    .toggle-switch input { opacity: 0; width: 0; height: 0; }
+    .toggle-slider {
+      position: absolute; inset: 0;
+      background: #1f2937; border-radius: 999px; transition: background 0.2s;
+    }
+    .toggle-slider::before {
+      content: '';
+      position: absolute; left: 3px; top: 3px;
+      width: 18px; height: 18px; border-radius: 50%;
+      background: #475569; transition: transform 0.2s, background 0.2s;
+    }
+    .toggle-switch input:checked + .toggle-slider { background: #1a3a2a; }
+    .toggle-switch input:checked + .toggle-slider::before { transform: translateX(20px); background: #52b788; }
+
+    .admin-logout-btn {
+      background: none; border: 1px solid #374151; color: #64748b;
+      padding: 6px 14px; border-radius: 8px; cursor: pointer; font-size: 0.78rem;
+      transition: color 0.2s, border-color 0.2s;
+    }
+    .admin-logout-btn:hover { color: #94a3b8; border-color: #4b5563; }
+  </style>
+</head>
+<body>
+
+<!-- ═══════════════════════════════════════════════════════ Login Modal ══ -->
+<div id="login-modal" class="login-overlay" style="display:none">
+  <div class="login-card">
+    <button class="login-close" onclick="hideLoginModal()" title="Close">✕</button>
+    <h2>🔐 Admin Login</h2>
+    <p>Smart Plant Monitor — Admin Access</p>
+    <div id="login-error" class="login-error"></div>
+    <input type="text"     id="login-username" class="login-input" placeholder="Username"
+           autocomplete="username" onkeydown="loginKeydown(event)">
+    <input type="password" id="login-password" class="login-input" placeholder="Password"
+           autocomplete="current-password" onkeydown="loginKeydown(event)">
+    <button id="login-submit" class="login-btn" onclick="handleLogin()">Sign In</button>
+  </div>
+</div>
+
+<!-- ═══════════════════════════════════════════════════ Admin Bar (bottom) ══ -->
+<div id="admin-bar" class="admin-bar">
+  <div class="admin-bar-left">
+    <div class="admin-avatar">👤</div>
+    <div>
+      <div class="admin-username" id="admin-username-display">Admin</div>
+      <div class="admin-role">Administrator</div>
+    </div>
+  </div>
+  <div class="admin-bar-right">
+    <div class="public-toggle-group">
+      <span class="public-toggle-label">Public Access</span>
+      <label class="toggle-switch" title="Toggle public visibility">
+        <input type="checkbox" id="public-access-chk" onchange="handlePublicAccessToggle(this.checked)">
+        <span class="toggle-slider"></span>
+      </label>
+      <span class="public-toggle-state off" id="public-access-state">OFF</span>
+    </div>
+    <button class="admin-logout-btn" onclick="handleLogout()">Sign Out</button>
+  </div>
+</div>
+
+<!-- ══════════════════════════════════════════════════════ Main Page ══════ -->
+<div id="private-screen" class="private-screen">
+  <div class="lock-icon">🔒</div>
+  <h2>Dashboard is Private</h2>
+  <p>This dashboard is currently set to private mode.<br>Use the 🔐 button above to sign in as admin.</p>
+</div>
+
+<div class="container" id="main-container">
+  <header>
+    <h1>🌿 Smart Plant Monitor</h1>
+    <p>Real-time environmental sensor dashboard</p>
+    <button class="admin-login-btn" id="admin-login-btn" onclick="showLoginModal()" title="Admin login">🔐</button>
+  </header>
+
+  <!-- Four sensor cards: Temperature · Humidity · Light · Water Level -->
+  <div class="cards">
+    <div class="card temp">
+      <div class="icon">🌡️</div>
+      <div class="label">Temperature</div>
+      <div class="value" id="temp">--</div>
+      <div class="unit">°C</div>
+    </div>
+    <div class="card humid">
+      <div class="icon">💧</div>
+      <div class="label">Humidity</div>
+      <div class="value" id="humidity">--</div>
+      <div class="unit">%</div>
+    </div>
+    <div class="card light">
+      <div class="icon">☀️</div>
+      <div class="label">Light Intensity</div>
+      <div class="value" id="light">--</div>
+      <div class="unit">lux</div>
+      <div class="lux-label" id="lux-label">—</div>
+    </div>
+    <div class="card water">
+      <div class="icon">🪣</div>
+      <div class="label">Water Level</div>
+      <div class="value" id="water-dist">--</div>
+      <div class="unit">cm from sensor</div>
+      <div class="water-label" id="water-label">—</div>
+    </div>
+  </div>
+
+  <!-- Pump card -->
+  <div class="card pump" style="margin-bottom: 20px;">
+    <div class="icon">🚿</div>
+    <div class="label">Water Pump</div>
+    <div class="pump-card-inner">
+      <div class="pump-status-row">
+        <div class="pump-indicator idle" id="pump-indicator"></div>
+        <span class="pump-status-text" id="pump-status-text">Checking...</span>
+      </div>
+      <div class="cooldown-bar-wrap" id="cooldown-bar-wrap">
+        <div class="cooldown-bar" id="cooldown-bar"></div>
+      </div>
+      <!-- pump-btn and login hint shown/hidden by updatePumpVisibility() -->
+      <button id="pump-btn" onclick="triggerPump()" style="display:none">💧 Water Now</button>
+      <div id="pump-login-hint" style="display:none">🔐 Admin login required to water</div>
+    </div>
+  </div>
+
+  <!-- Status bar -->
+  <div class="status-bar">
+    <div class="live-badge"><span class="dot"></span>LIVE</div>
+    <div class="ws-badge disconnected" id="ws-badge">
+      <span class="dot"></span>
+      <span id="ws-label">Connecting...</span>
+    </div>
+    <span>Last updated: <strong id="last-updated">loading...</strong></span>
+  </div>
+
+  <!-- Charts -->
+  <div class="chart-box">
+    <p class="chart-title">🌡️ Temperature — last 100 readings (°C)</p>
+    <canvas id="tempChart" height="120"></canvas>
+  </div>
+  <div class="chart-box">
+    <p class="chart-title">💧 Humidity — last 100 readings (%)</p>
+    <canvas id="humidChart" height="120"></canvas>
+  </div>
+  <div class="chart-box">
+    <p class="chart-title">☀️ Light Intensity — last 100 readings (lux)</p>
+    <canvas id="lightChart" height="120"></canvas>
+  </div>
+  <div class="chart-box">
+    <p class="chart-title">🪣 Water Level — last 100 readings (cm from sensor)</p>
+    <canvas id="waterChart" height="120"></canvas>
+  </div>
+
+  <!-- Pump activation history -->
+  <p class="section-title">Pump Activation History — last 10</p>
+  <div class="pump-history-wrapper">
+    <div class="pump-history-wrap">
+      <table>
+        <thead>
+          <tr><th>#</th><th>Date &amp; Time Activated</th><th>Status</th></tr>
+        </thead>
+        <tbody id="pump-history-body">
+          <tr><td colspan="3" style="color:#64748b;text-align:center;padding:32px">No activations recorded yet</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+
+  <!-- Sensor history table -->
+  <p class="section-title">History — last 100 readings</p>
+  <div class="history-wrapper">
+    <div class="history-table-wrap">
+      <table>
+        <thead>
+          <tr>
+            <th>#</th><th>Time</th><th>Temperature</th><th>Humidity</th><th>Light</th><th>Water Level</th>
+          </tr>
+        </thead>
+        <tbody id="history-body">
+          <tr><td colspan="6" style="color:#64748b;text-align:center;padding:32px">Loading...</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+</div><!-- /.container -->
+
+<script>
+  // ══════════════════════════════════════════════════════════════════════════
+  //  CONFIG — fill in your values from AWS Console after Cognito setup
+  // ══════════════════════════════════════════════════════════════════════════
+  var API_BASE             = 'https://ysxbsbrjwe.execute-api.ap-southeast-1.amazonaws.com';
+  var WS_URL               = 'wss://fbtd8vs7p1.execute-api.ap-southeast-1.amazonaws.com/production';
+  var COGNITO_USER_POOL_ID = 'ap-southeast-1_pH0A9YhtX';   // ← fill in
+  var COGNITO_CLIENT_ID    = '2k64qi2pqlpv20s831jr8hd3js'; // ← fill in (App client ID)
+
+  // ── Timing (must match Lambda) ───────────────────────────────────────────
+  var PUMP_RUN_SECONDS = 5;
+  var COOLDOWN_SECONDS = 20;
+
+  // ── State ────────────────────────────────────────────────────────────────
+  var _firedAt       = 0;
+  var _clockOffset   = 0;
+  var _ws            = null;
+  var _wsKeepAlive   = null;
+  var lastTimestamp  = null;
+  var tempChart      = null;
+  var humidChart     = null;
+  var lightChart     = null;
+  var waterChart     = null;
+  var _isPublicAccess = true;   // current public_access flag from server
+  var _sensorInterval = null;   // reference so we can stop/start polling
+
+  // Auth state
+  var _adminToken    = null;    // Cognito Access Token (in-memory only)
+  var _cognitoUser   = null;    // CognitoUser object for token refresh
+  var _userPool      = null;
+  var _adminUsername = '';
+
+  // Pump activation history — persisted in localStorage, max 10 entries
+  var _pumpHistory = (function() {
+    try { return JSON.parse(localStorage.getItem('pumpHistory') || '[]'); } catch(e) { return []; }
+  })();
+
+  // ── Helpers ──────────────────────────────────────────────────────────────
+  function formatDate(ts) {
+    var d = new Date(parseInt(ts));
+    return d.toLocaleDateString([], { month: 'short', day: 'numeric' })
+      + ' ' + d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+  }
+  function formatTimeShort(ts) {
+    return new Date(parseInt(ts)).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', hour12: true });
+  }
+  function luxLabel(lux) {
+    if (lux === null || lux === undefined) return '—';
+    if (lux < 10)    return 'Dark';
+    if (lux < 100)   return 'Dim';
+    if (lux < 1000)  return 'Bright';
+    if (lux < 10000) return 'Very Bright';
+    return 'Direct Sun';
+  }
+  function waterLabel(dist) {
+    if (dist === null || dist === undefined) return '—';
+    if (dist < 5)  return 'Full';
+    if (dist < 20) return 'Good';
+    if (dist < 35) return 'Low ⚠️';
+    return 'Empty';
+  }
+
+  // ── Cognito Auth ──────────────────────────────────────────────────────────
+  function initCognito() {
+    _userPool = new AmazonCognitoIdentity.CognitoUserPool({
+      UserPoolId: COGNITO_USER_POOL_ID,
+      ClientId:   COGNITO_CLIENT_ID
+    });
+  }
+
+  function showLoginModal() {
+    if (_adminToken) return;   // already logged in, ignore
+    document.getElementById('login-error').style.display = 'none';
+    document.getElementById('login-error').textContent   = '';
+    document.getElementById('login-username').value = '';
+    document.getElementById('login-password').value = '';
+    document.getElementById('login-modal').style.display = 'flex';
+    setTimeout(function() { document.getElementById('login-username').focus(); }, 50);
+  }
+
+  function hideLoginModal() {
+    document.getElementById('login-modal').style.display = 'none';
+  }
+
+  function loginKeydown(e) {
+    if (e.key === 'Enter') handleLogin();
+    if (e.key === 'Escape') hideLoginModal();
+  }
+
+  function handleLogin() {
+    var username = document.getElementById('login-username').value.trim();
+    var password = document.getElementById('login-password').value;
+    var errEl    = document.getElementById('login-error');
+    var btn      = document.getElementById('login-submit');
+
+    if (!username || !password) {
+      errEl.textContent   = 'Please enter both username and password.';
+      errEl.style.display = 'block';
+      return;
+    }
+
+    btn.disabled    = true;
+    btn.textContent = 'Signing in...';
+    errEl.style.display = 'none';
+
+    var authDetails = new AmazonCognitoIdentity.AuthenticationDetails({
+      Username: username,
+      Password: password
+    });
+    var cognitoUser = new AmazonCognitoIdentity.CognitoUser({
+      Username: username,
+      Pool:     _userPool
+    });
+
+    cognitoUser.authenticateUser(authDetails, {
+      onSuccess: function(result) {
+        _adminToken    = result.getAccessToken().getJwtToken();
+        _cognitoUser   = cognitoUser;
+        _adminUsername = username;
+        hideLoginModal();
+        onAdminLoggedIn();
+        btn.disabled    = false;
+        btn.textContent = 'Sign In';
+      },
+      onFailure: function(err) {
+        var msg = err.message || 'Login failed. Check your credentials.';
+        errEl.textContent   = msg;
+        errEl.style.display = 'block';
+        btn.disabled    = false;
+        btn.textContent = 'Sign In';
+      },
+      newPasswordRequired: function() {
+        errEl.textContent   = 'Password reset required. Use AWS Console to set a permanent password first.';
+        errEl.style.display = 'block';
+        btn.disabled    = false;
+        btn.textContent = 'Sign In';
+      }
+    });
+  }
+
+  function handleLogout() {
+    if (_cognitoUser) _cognitoUser.signOut();
+    _adminToken    = null;
+    _cognitoUser   = null;
+    _adminUsername = '';
+    onAdminLoggedOut();
+  }
+
+  // Silently refresh the access token using the stored refresh token
+  function refreshAdminToken(callback) {
+    if (!_cognitoUser) return callback(new Error('No active session'));
+    _cognitoUser.getSession(function(err, session) {
+      if (err) return callback(err);
+      _adminToken = session.getAccessToken().getJwtToken();
+      callback(null, _adminToken);
+    });
+  }
+
+  // Fetch wrapper that auto-attaches token and retries once on 401
+  async function authFetch(url, options) {
+    var opts = Object.assign({}, options);
+    opts.headers = Object.assign({}, opts.headers || {});
+    if (_adminToken) opts.headers['Authorization'] = 'Bearer ' + _adminToken;
+
+    var res = await fetch(url, opts);
+
+    if (res.status === 401 && _adminToken) {
+      // Try a token refresh, then retry once
+      try {
+        await new Promise(function(resolve, reject) {
+          refreshAdminToken(function(err) { if (err) reject(err); else resolve(); });
+        });
+        opts.headers['Authorization'] = 'Bearer ' + _adminToken;
+        res = await fetch(url, opts);
+      } catch(e) {
+        console.warn('Token refresh failed — logging out:', e);
+        handleLogout();
+        throw e;
+      }
+    }
+    return res;
+  }
+
+  // ── Admin state changes ───────────────────────────────────────────────────
+  function onAdminLoggedIn() {
+    document.getElementById('admin-login-btn').classList.add('authed');
+    document.getElementById('admin-login-btn').textContent = '✅';
+    document.getElementById('admin-bar').style.display = 'flex';
+    document.getElementById('admin-username-display').textContent = _adminUsername;
+    updatePumpVisibility();
+    // Refresh public-access state so toggle reflects current value
+    checkPublicAccess();
+    // If dashboard was private, show it now (admin can see regardless)
+    if (!_isPublicAccess) {
+      document.getElementById('private-screen').style.display = 'none';
+      document.getElementById('main-container').style.display = 'block';
+      startSensorPolling();
+    }
+  }
+
+  function onAdminLoggedOut() {
+    document.getElementById('admin-login-btn').classList.remove('authed');
+    document.getElementById('admin-login-btn').textContent = '🔐';
+    document.getElementById('admin-bar').style.display = 'none';
+    updatePumpVisibility();
+    // If dashboard is private, re-lock it
+    if (!_isPublicAccess) {
+      document.getElementById('main-container').style.display = 'none';
+      document.getElementById('private-screen').style.display = 'flex';
+      stopSensorPolling();
+    }
+  }
+
+  function updatePumpVisibility() {
+    var btn   = document.getElementById('pump-btn');
+    var hint  = document.getElementById('pump-login-hint');
+    if (_adminToken) {
+      btn.style.display  = 'block';
+      hint.style.display = 'none';
+    } else {
+      btn.style.display  = 'none';
+      hint.style.display = 'block';
+    }
+  }
+
+  // ── Public access flag ────────────────────────────────────────────────────
+  async function checkPublicAccess() {
+    try {
+      var res  = await fetch(API_BASE + '/public-access');
+      var data = await res.json();
+      applyPublicAccess(data.public_access);
+    } catch(e) {
+      console.warn('checkPublicAccess failed:', e);
+    }
+  }
+
+  function applyPublicAccess(enabled) {
+    _isPublicAccess = !!enabled;
+
+    // Update admin bar toggle state
+    var chk   = document.getElementById('public-access-chk');
+    var state = document.getElementById('public-access-state');
+    chk.checked       = _isPublicAccess;
+    state.textContent = _isPublicAccess ? 'ON' : 'OFF';
+    state.className   = 'public-toggle-state ' + (_isPublicAccess ? 'on' : 'off');
+
+    // Show or lock dashboard for non-admins
+    if (_isPublicAccess || _adminToken) {
+      document.getElementById('main-container').style.display = 'block';
+      document.getElementById('private-screen').style.display = 'none';
+      startSensorPolling();
+    } else {
+      document.getElementById('main-container').style.display = 'none';
+      document.getElementById('private-screen').style.display = 'flex';
+      stopSensorPolling();
+    }
+  }
+
+  async function handlePublicAccessToggle(enabled) {
+    // Optimistic UI update
+    var state = document.getElementById('public-access-state');
+    state.textContent = enabled ? 'ON' : 'OFF';
+    state.className   = 'public-toggle-state ' + (enabled ? 'on' : 'off');
+    try {
+      var res = await authFetch(API_BASE + '/public-access', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ enabled: enabled })
+      });
+      if (!res.ok) {
+        var err = await res.json();
+        alert('Could not update public access: ' + (err.error || res.status));
+        // Revert toggle
+        document.getElementById('public-access-chk').checked = !enabled;
+        applyPublicAccess(!enabled);
+      } else {
+        // Lambda also broadcasts via WebSocket — just apply locally
+        _isPublicAccess = enabled;
+      }
+    } catch(e) {
+      console.error('handlePublicAccessToggle error:', e);
+      // Revert
+      document.getElementById('public-access-chk').checked = !enabled;
+      applyPublicAccess(!enabled);
+    }
+  }
+
+  // ── Sensor polling start/stop ─────────────────────────────────────────────
+  function startSensorPolling() {
+    if (_sensorInterval) return;    // already running
+    fetchData();
+    _sensorInterval = setInterval(fetchData, 5000);
+  }
+
+  function stopSensorPolling() {
+    if (_sensorInterval) {
+      clearInterval(_sensorInterval);
+      _sensorInterval = null;
+    }
+  }
+
+  // ── Pump activation history ───────────────────────────────────────────────
+  function savePumpHistory() {
+    try { localStorage.setItem('pumpHistory', JSON.stringify(_pumpHistory)); } catch(e) {}
+  }
+  function recordPumpFire(firedAt) {
+    if (_pumpHistory.indexOf(firedAt) !== -1) return;
+    _pumpHistory.unshift(firedAt);
+    if (_pumpHistory.length > 10) _pumpHistory.length = 10;
+    savePumpHistory();
+    renderPumpHistory();
+  }
+  function renderPumpHistory() {
+    var tbody = document.getElementById('pump-history-body');
+    if (!tbody) return;
+    if (_pumpHistory.length === 0) {
+      tbody.innerHTML = '<tr><td colspan="3" style="color:#64748b;text-align:center;padding:32px">No activations recorded yet</td></tr>';
+      return;
+    }
+    tbody.innerHTML = _pumpHistory.map(function(ts, i) {
+      var d  = new Date(ts * 1000);
+      var dt = d.toLocaleDateString([], { month: 'short', day: 'numeric', year: 'numeric' })
+             + ' ' + d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: true });
+      return '<tr>' +
+        '<td style="color:#475569">' + (i + 1) + '</td>' +
+        '<td>' + dt + '</td>' +
+        '<td class="pump-fired-val">💧 Activated</td>' +
+        '</tr>';
+    }).join('');
+  }
+
+  // ── Pump state computation ────────────────────────────────────────────────
+  function computeState() {
+    if (!_firedAt) return { pumping: false, cooldownRemaining: 0 };
+    var now     = (Date.now() / 1000) + _clockOffset;
+    var elapsed = Math.max(0, now - _firedAt);
+    if (elapsed < PUMP_RUN_SECONDS) {
+      return { pumping: true, cooldownRemaining: COOLDOWN_SECONDS };
+    }
+    var remaining = Math.max(0, COOLDOWN_SECONDS - (elapsed - PUMP_RUN_SECONDS));
+    return { pumping: false, cooldownRemaining: remaining };
+  }
+
+  // ── Pump card render — 60fps requestAnimationFrame loop ───────────────────
+  var _lastSec  = -1;
+  var _lastMode = '';
+
+  function renderPumpUI() {
+    var s       = computeState();
+    var btn     = document.getElementById('pump-btn');
+    var dot     = document.getElementById('pump-indicator');
+    var txt     = document.getElementById('pump-status-text');
+    var barWrap = document.getElementById('cooldown-bar-wrap');
+    var bar     = document.getElementById('cooldown-bar');
+
+    if (s.pumping) {
+      if (_lastMode !== 'pumping') {
+        _lastMode             = 'pumping';
+        dot.className         = 'pump-indicator running';
+        txt.textContent       = 'Pump running';
+        btn.textContent       = '⏳ Watering...';
+        btn.disabled          = true;
+        barWrap.style.display = 'none';
+      }
+    } else if (s.cooldownRemaining > 0.05) {
+      bar.style.width = ((s.cooldownRemaining / COOLDOWN_SECONDS) * 100) + '%';
+      var sec = Math.ceil(s.cooldownRemaining);
+      if (_lastMode !== 'cooldown') {
+        _lastMode             = 'cooldown';
+        dot.className         = 'pump-indicator cooldown';
+        txt.textContent       = 'Cooling down';
+        btn.disabled          = true;
+        barWrap.style.display = 'block';
+      }
+      if (sec !== _lastSec) {
+        _lastSec        = sec;
+        btn.textContent = '⏳ Cooldown — ' + sec + 's';
+      }
+    } else {
+      if (_lastMode !== 'idle') {
+        _lastMode             = 'idle';
+        _lastSec              = -1;
+        if (_firedAt) _firedAt = 0;
+        dot.className         = 'pump-indicator idle';
+        txt.textContent       = 'Idle';
+        btn.textContent       = '💧 Water Now';
+        btn.disabled          = false;
+        barWrap.style.display = 'none';
+      }
+    }
+    requestAnimationFrame(renderPumpUI);
+  }
+
+  function applyFiredAt(firedAt) {
+    if (firedAt && firedAt > _firedAt) {
+      _firedAt = firedAt;
+      recordPumpFire(firedAt);
+    }
+  }
+
+  // ── WebSocket badge ───────────────────────────────────────────────────────
+  function setWsBadge(connected) {
+    var badge = document.getElementById('ws-badge');
+    var label = document.getElementById('ws-label');
+    badge.className   = 'ws-badge ' + (connected ? 'connected' : 'disconnected');
+    label.textContent = connected ? 'Live push' : 'Polling fallback';
+  }
+
+  // ── WebSocket ─────────────────────────────────────────────────────────────
+  function connectWebSocket() {
+    try {
+      _ws = new WebSocket(WS_URL);
+
+      _ws.onopen = function() {
+        console.log('WebSocket connected');
+        setWsBadge(true);
+        clearInterval(_wsKeepAlive);
+        _wsKeepAlive = setInterval(function() {
+          if (_ws && _ws.readyState === WebSocket.OPEN) {
+            _ws.send(JSON.stringify({ action: 'ping' }));
+          }
+        }, 25000);
+      };
+
+      _ws.onmessage = function(event) {
+        try {
+          var msg = JSON.parse(event.data);
+          if (msg.type === 'pump_update' && msg.fired_at) {
+            applyFiredAt(msg.fired_at);
+          }
+          // Real-time public access change — broadcast from Lambda
+          if (msg.type === 'public_access_update' && msg.public_access !== undefined) {
+            applyPublicAccess(msg.public_access);
+          }
+        } catch(e) {
+          console.warn('WS message parse error:', e);
+        }
+      };
+
+      _ws.onclose = function() {
+        console.warn('WebSocket closed — reconnecting in 3s');
+        clearInterval(_wsKeepAlive);
+        setWsBadge(false);
+        _ws = null;
+        setTimeout(connectWebSocket, 3000);
+      };
+
+      _ws.onerror = function(e) {
+        console.warn('WebSocket error:', e);
+      };
+    } catch(e) {
+      console.warn('WebSocket init failed, retrying in 5s:', e);
+      setWsBadge(false);
+      setTimeout(connectWebSocket, 5000);
+    }
+  }
+
+  // ── Pump status HTTP poll ─────────────────────────────────────────────────
+  async function fetchPumpStatus() {
+    try {
+      var res  = await fetch(API_BASE + '/pump-status');
+      var data = await res.json();
+      var localNow = Date.now() / 1000;
+      if (data.server_time) _clockOffset = data.server_time - localNow;
+      if (data.fired_at)    applyFiredAt(data.fired_at);
+    } catch(e) {
+      console.warn('pump-status fetch failed:', e);
+    }
+  }
+
+  // ── Pump button ───────────────────────────────────────────────────────────
+  async function triggerPump() {
+    var btn = document.getElementById('pump-btn');
+    if (!btn || btn.disabled) return;
+    if (!_adminToken) {
+      showLoginModal();
+      return;
+    }
+    btn.disabled    = true;
+    btn.textContent = '⏳ Sending...';
+    try {
+      var res  = await authFetch(API_BASE + '/pump', { method: 'POST' });
+      var data = await res.json();
+      if (res.ok || res.status === 429) {
+        if (data.fired_at) applyFiredAt(data.fired_at);
+      } else if (res.status === 401) {
+        document.getElementById('pump-status-text').textContent = 'Session expired — please log in again';
+        handleLogout();
+      } else {
+        document.getElementById('pump-status-text').textContent = 'Error — try again';
+      }
+    } catch(e) {
+      console.error('Pump POST failed:', e);
+      document.getElementById('pump-status-text').textContent = 'Connection error';
+    }
+  }
+
+  // ── Sensor data fetch ─────────────────────────────────────────────────────
+  async function fetchData() {
+    try {
+      // Use authFetch — if admin is logged in, token is attached so 403 won't happen even when private
+      var res = await authFetch(API_BASE + '/sensor');
+
+      if (res.status === 403) {
+        // Dashboard is private and we're not admin — don't update; private screen is already shown
+        return;
+      }
+      var data = await res.json();
+
+      document.getElementById('temp').textContent     = data.temperature.toFixed(1);
+      document.getElementById('humidity').textContent = data.humidity.toFixed(1);
+
+      if (data.light !== null && data.light !== undefined) {
+        document.getElementById('light').textContent     = Math.round(data.light);
+        document.getElementById('lux-label').textContent = luxLabel(data.light);
+      } else {
+        document.getElementById('light').textContent     = '--';
+        document.getElementById('lux-label').textContent = 'No sensor';
+      }
+
+      if (data.water_level !== null && data.water_level !== undefined) {
+        document.getElementById('water-dist').textContent  = data.water_level.toFixed(1);
+        document.getElementById('water-label').textContent = waterLabel(data.water_level);
+      } else {
+        document.getElementById('water-dist').textContent  = '--';
+        document.getElementById('water-label').textContent = 'No sensor';
+      }
+
+      document.getElementById('last-updated').textContent =
+        new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: true });
+
+      var isNew     = lastTimestamp !== data.timestamp;
+      lastTimestamp = data.timestamp;
+
+      var chronological = data.history.slice().reverse();
+
+      tempChart.data.labels           = chronological.map(function(r) { return formatTimeShort(r.timestamp); });
+      tempChart.data.datasets[0].data = chronological.map(function(r) { return r.temperature; });
+      tempChart.update();
+
+      humidChart.data.labels           = chronological.map(function(r) { return formatTimeShort(r.timestamp); });
+      humidChart.data.datasets[0].data = chronological.map(function(r) { return r.humidity; });
+      humidChart.update();
+
+      var lightLabels = [], lightValues = [];
+      chronological.forEach(function(r) {
+        if (r.light !== null && r.light !== undefined) {
+          lightLabels.push(formatTimeShort(r.timestamp));
+          lightValues.push(r.light);
+        }
+      });
+      lightChart.data.labels           = lightLabels;
+      lightChart.data.datasets[0].data = lightValues;
+      lightChart.update();
+
+      var waterLabels = [], waterValues = [];
+      chronological.forEach(function(r) {
+        if (r.water_level !== null && r.water_level !== undefined) {
+          waterLabels.push(formatTimeShort(r.timestamp));
+          waterValues.push(r.water_level);
+        }
+      });
+      waterChart.data.labels           = waterLabels;
+      waterChart.data.datasets[0].data = waterValues;
+      waterChart.update();
+
+      document.getElementById('history-body').innerHTML = data.history.map(function(row, i) {
+        var lightCell = (row.light !== null && row.light !== undefined)
+          ? '<td class="light-val">' + Math.round(row.light) + ' lx</td>'
+          : '<td style="color:#475569">—</td>';
+        var waterCell = (row.water_level !== null && row.water_level !== undefined)
+          ? '<td class="water-val">' + row.water_level.toFixed(1) + ' cm</td>'
+          : '<td style="color:#475569">—</td>';
+        return '<tr class="' + (i === 0 && isNew ? 'new-row' : '') + '">' +
+          '<td style="color:#475569">' + (i + 1) + '</td>' +
+          '<td>' + formatDate(row.timestamp) + '</td>' +
+          '<td class="temp-val">' + row.temperature.toFixed(1) + ' °C</td>' +
+          '<td class="humid-val">' + row.humidity.toFixed(1) + ' %</td>' +
+          lightCell + waterCell + '</tr>';
+      }).join('');
+
+    } catch(e) {
+      console.error('Sensor fetch error:', e);
+      document.getElementById('last-updated').textContent = 'Connection error';
+    }
+  }
+
+  // ── Charts ────────────────────────────────────────────────────────────────
+  function initCharts() {
+    var tickX = { color: '#475569', font: { size: 9 }, maxTicksLimit: 8, maxRotation: 0, autoSkip: true };
+    var tickY = { color: '#475569', font: { size: 9 } };
+
+    tempChart = new Chart(document.getElementById('tempChart'), {
+      type: 'line',
+      data: { labels: [], datasets: [{ data: [], borderColor: '#f6ad55',
+        backgroundColor: 'rgba(246,173,85,0.08)', borderWidth: 2,
+        pointRadius: 0, pointHoverRadius: 5, pointHoverBackgroundColor: '#f6ad55',
+        fill: true, tension: 0.4 }] },
+      options: {
+        responsive: true, animation: { duration: 300 },
+        interaction: { mode: 'index', intersect: false },
+        plugins: { legend: { display: false },
+          tooltip: { backgroundColor: '#1f2937', titleColor: '#94a3b8',
+            bodyColor: '#f6ad55', borderColor: '#374151', borderWidth: 1, padding: 10,
+            callbacks: { label: function(item) { return '  ' + item.parsed.y.toFixed(1) + ' °C'; } } } },
+        scales: {
+          x: { ticks: tickX, grid: { color: '#1f2937' } },
+          y: { suggestedMin: 20, suggestedMax: 40, ticks: tickY, grid: { color: '#1f2937' } }
+        }
+      }
+    });
+
+    humidChart = new Chart(document.getElementById('humidChart'), {
+      type: 'line',
+      data: { labels: [], datasets: [{ data: [], borderColor: '#63b3ed',
+        backgroundColor: 'rgba(99,179,237,0.08)', borderWidth: 2,
+        pointRadius: 0, pointHoverRadius: 5, pointHoverBackgroundColor: '#63b3ed',
+        fill: true, tension: 0.4 }] },
+      options: {
+        responsive: true, animation: { duration: 300 },
+        interaction: { mode: 'index', intersect: false },
+        plugins: { legend: { display: false },
+          tooltip: { backgroundColor: '#1f2937', titleColor: '#94a3b8',
+            bodyColor: '#63b3ed', borderColor: '#374151', borderWidth: 1, padding: 10,
+            callbacks: { label: function(item) { return '  ' + item.parsed.y.toFixed(1) + ' %'; } } } },
+        scales: {
+          x: { ticks: tickX, grid: { color: '#1f2937' } },
+          y: { suggestedMin: 40, suggestedMax: 100, ticks: tickY, grid: { color: '#1f2937' } }
+        }
+      }
+    });
+
+    lightChart = new Chart(document.getElementById('lightChart'), {
+      type: 'line',
+      data: { labels: [], datasets: [{ data: [], borderColor: '#fde68a',
+        backgroundColor: 'rgba(253,230,138,0.08)', borderWidth: 2,
+        pointRadius: 0, pointHoverRadius: 5, pointHoverBackgroundColor: '#fde68a',
+        fill: true, tension: 0.4 }] },
+      options: {
+        responsive: true, animation: { duration: 300 },
+        interaction: { mode: 'index', intersect: false },
+        plugins: { legend: { display: false },
+          tooltip: { backgroundColor: '#1f2937', titleColor: '#94a3b8',
+            bodyColor: '#fde68a', borderColor: '#374151', borderWidth: 1, padding: 10,
+            callbacks: { label: function(item) { return '  ' + item.parsed.y.toFixed(0) + ' lux'; } } } },
+        scales: {
+          x: { ticks: tickX, grid: { color: '#1f2937' } },
+          y: { suggestedMin: 0, suggestedMax: 1000, ticks: tickY, grid: { color: '#1f2937' } }
+        }
+      }
+    });
+
+    waterChart = new Chart(document.getElementById('waterChart'), {
+      type: 'line',
+      data: { labels: [], datasets: [{ data: [], borderColor: '#2dd4bf',
+        backgroundColor: 'rgba(45,212,191,0.08)', borderWidth: 2,
+        pointRadius: 0, pointHoverRadius: 5, pointHoverBackgroundColor: '#2dd4bf',
+        fill: true, tension: 0.4 }] },
+      options: {
+        responsive: true, animation: { duration: 300 },
+        interaction: { mode: 'index', intersect: false },
+        plugins: { legend: { display: false },
+          tooltip: { backgroundColor: '#1f2937', titleColor: '#94a3b8',
+            bodyColor: '#2dd4bf', borderColor: '#374151', borderWidth: 1, padding: 10,
+            callbacks: { label: function(item) { return '  ' + item.parsed.y.toFixed(1) + ' cm'; } } } },
+        scales: {
+          x: { ticks: tickX, grid: { color: '#1f2937' } },
+          y: { reverse: true, suggestedMin: 0, suggestedMax: 40, ticks: tickY, grid: { color: '#1f2937' } }
+        }
+      }
+    });
+  }
+
+  // ── Bootstrap ─────────────────────────────────────────────────────────────
+  window.onload = function() {
+    initCognito();
+    initCharts();
+    renderPumpHistory();
+    updatePumpVisibility();
+
+    // Check public access first — determines what to show on load
+    checkPublicAccess().then(function() {
+      // startSensorPolling is called inside checkPublicAccess → applyPublicAccess
+    });
+
+    fetchPumpStatus();
+    connectWebSocket();
+    setInterval(fetchPumpStatus, 3000);
+    requestAnimationFrame(renderPumpUI);
+
+    document.addEventListener('visibilitychange', function() {
+      if (document.visibilityState === 'visible') {
+        fetchPumpStatus();
+        checkPublicAccess();
+        if (!_ws || _ws.readyState !== WebSocket.OPEN) connectWebSocket();
+      }
+    });
+
+    // Dismiss chart tooltips on mobile tap outside canvas
+    document.addEventListener('touchstart', function(e) {
+      var charts = [
+        { canvas: document.getElementById('tempChart'),  chart: tempChart  },
+        { canvas: document.getElementById('humidChart'), chart: humidChart },
+        { canvas: document.getElementById('lightChart'), chart: lightChart },
+        { canvas: document.getElementById('waterChart'), chart: waterChart }
+      ];
+      if (!charts.some(function(c) { return e.target === c.canvas; })) {
+        charts.forEach(function(c) {
+          if (c.chart) {
+            c.chart.setActiveElements([]);
+            c.chart.tooltip.setActiveElements([], {});
+            c.chart.update('none');
+          }
+        });
+      }
+    });
+  };
+</script>
+</body>
+</html>
