@@ -3964,12 +3964,13 @@ body .bento-card:not(.cam-card) .bento-status{ font-size:.75rem !important; colo
       '<b id="spm-al-state" class="toggle-state off">OFF</b>';
     host.appendChild(wrap);
     wrap.querySelector('#spm-al-input').addEventListener('change',function(e){ send(!!e.target.checked); });
+    paint();          // apply last-known state instantly so a React re-render never flashes the toggle back to OFF
     refreshState();
   }
   setInterval(function(){
     if(window.__SPM_TOKEN__){ inject(); }
     else { var t=document.getElementById('spm-al-toggle'); if(t) t.remove(); }
-  },1500);
+  },700);
   setInterval(function(){ if(window.__SPM_TOKEN__&&document.getElementById('spm-al-toggle')) refreshState(); },15000);
 })();
 </script>
