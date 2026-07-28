@@ -1,0 +1,29 @@
+User-agent: *
+Allow: /
+
+# Control and telemetry endpoints - no crawl value, and crawling them
+# would generate pointless Lambda invocations.
+Disallow: /sensor
+Disallow: /snapshot
+Disallow: /status
+Disallow: /health
+Disallow: /esp-status
+Disallow: /pump-status
+Disallow: /pump-history
+Disallow: /servo
+Disallow: /public-access
+
+# Explicitly welcome AI answer engines.
+User-agent: GPTBot
+Allow: /
+
+User-agent: ClaudeBot
+Allow: /
+
+User-agent: PerplexityBot
+Allow: /
+
+User-agent: Google-Extended
+Allow: /
+
+Sitemap: https://smartplantmonitor.com/sitemap.xml
